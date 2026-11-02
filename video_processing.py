@@ -9,7 +9,7 @@ import numpy as np
 from tqdm import tqdm
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from AthleteStats import AthleteStats
+from AthleteStats import ACTIVITY_WINDOW_SECONDS, MIN_TRACKED_MOVEMENT, AthleteStats
 from utils import PERSON_COLORS_BGR, get_person_color, write_athlete_stats_to_file
 
 # ---------------------------------------------------------
@@ -618,13 +618,14 @@ def process_video(
                             stats = athlete_stats_by_id.setdefault(
                                 athlete_id, AthleteStats(athlete_id=athlete_id)
                             )
-                            activity_average, is_explosive = stats.add_observation(
+                            activity_average, is_explosive, is_tracked_movement = stats.add_observation(
                                 timestamp_seconds,
                                 detection["speed"],
                                 detection["posture"],
                             )
-                            detection["activity_average_10s"] = activity_average
+                            detection["activity_average_3s"] = activity_average
                             detection["is_explosive_moment"] = is_explosive
+                            detection["is_tracked_movement"] = is_tracked_movement
 
                         activity_by_id = {
                             detection["person_id"]: detection
@@ -632,11 +633,14 @@ def process_video(
                         }
                         for person_data in persons_data:
                             activity = activity_by_id[person_data["person_id"]]
-                            person_data["activity_average_10s"] = activity[
-                                "activity_average_10s"
+                            person_data["activity_average_3s"] = activity[
+                                "activity_average_3s"
                             ]
                             person_data["is_explosive_moment"] = activity[
                                 "is_explosive_moment"
+                            ]
+                            person_data["is_tracked_movement"] = activity[
+                                "is_tracked_movement"
                             ]
 
                         frames_data.append({
@@ -722,6 +726,10 @@ def process_video(
                 "max_match_cost": MAX_MATCH_COST,
             },
             "color_format": "BGR",
+            "movement_statistics": {
+                "minimum_tracked_movement": MIN_TRACKED_MOVEMENT,
+                "activity_window_seconds": ACTIVITY_WINDOW_SECONDS,
+            },
         },
         "athletes": [stats.to_dict() for _, stats in sorted(athlete_stats_by_id.items())],
         "activity_timeline": [
