@@ -1,18 +1,12 @@
-import argparse
-import json
 import os
 import sys
-from pathlib import Path
-from itertools import permutations
-
 import cv2
 import mediapipe as mp
 import numpy as np
 from tqdm import tqdm
-
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-
+from utils import *
 
 # ---------------------------------------------------------
 # MediaPipe Pose Landmarker
@@ -58,16 +52,6 @@ POSE_CONNECTIONS = [
     (28, 32),
 ]
 
-# Stable colors by persistent athlete ID (BGR).
-PERSON_COLORS = [
-    (0, 255, 0),      # Green
-    (0, 165, 255),    # Orange
-    (255, 0, 255),    # Purple
-    (255, 255, 0),    # Cyan
-    (255, 0, 0),      # Blue
-    (0, 0, 255),      # Red
-]
-
 # Tracker tuning
 MAX_TRACK_LOST_SECONDS = 2.5
 MAX_MATCH_COST = 0.82
@@ -75,6 +59,9 @@ COLOR_WEIGHT = 0.75
 POSITION_WEIGHT = 0.25
 FEATURE_EMA_ALPHA = 0.25
 
+def get_person_color(person_id: int):
+    """Возвращает цвет в формате BGR для данного person_id."""
+    return PERSON_COLORS_BGR[person_id % len(PERSON_COLORS_BGR)]
 
 def load_model(model_path: str, max_poses: int):
     """Load MediaPipe Pose Landmarker using the modern Tasks API."""
@@ -95,7 +82,6 @@ def load_model(model_path: str, max_poses: int):
     )
     return vision.PoseLandmarker.create_from_options(options)
 
-
 def landmark_to_dict(landmark, index):
     result = {
         "name": LANDMARK_NAMES[index],
@@ -109,7 +95,6 @@ def landmark_to_dict(landmark, index):
         result["presence"] = float(landmark.presence)
     return result
 
-
 def world_landmark_to_dict(landmark, index):
     """World coordinates are approximate and expressed in meters."""
     return {
@@ -119,15 +104,7 @@ def world_landmark_to_dict(landmark, index):
         "z": float(landmark.z),
     }
 
-
 def get_torso_feature(frame, landmarks):
-    """
-    Build a clothing-color fingerprint from the torso area.
-
-    Uses a normalized 2D HSV histogram (Hue + Saturation), not a single RGB
-    pixel. This is more robust to small lighting changes, but can still fail
-    when athletes wear similar colors or overlap heavily.
-    """
     h, w = frame.shape[:2]
 
     # MediaPipe indices: shoulders 11/12, hips 23/24.
@@ -183,15 +160,12 @@ def get_torso_feature(frame, landmarks):
 
     return hist.flatten().astype(np.float32), center
 
-
 def color_distance(feature_a, feature_b):
-    """Bhattacharyya distance between normalized HSV histograms [0..1]."""
     if feature_a is None or feature_b is None:
         return 0.5  # Neutral fallback when color is unavailable.
     a = feature_a.reshape(-1, 1).astype(np.float32)
     b = feature_b.reshape(-1, 1).astype(np.float32)
     return float(np.clip(cv2.compareHist(a, b, cv2.HISTCMP_BHATTACHARYYA), 0, 1))
-
 
 def position_distance(center_a, center_b):
     if center_a is None or center_b is None:
@@ -199,15 +173,7 @@ def position_distance(center_a, center_b):
     # Frame-normalized distance. 0.5 roughly means a large displacement.
     return float(np.clip(np.linalg.norm(center_a - center_b) / 0.5, 0, 1))
 
-
 class AthleteTracker:
-    """
-    Assign persistent IDs to MediaPipe detections.
-
-    Detection index from MediaPipe is not an identity. This tracker combines
-    torso clothing-color histograms and approximate torso position.
-    """
-
     def __init__(self):
         self.tracks = {}  # persistent_id -> track data
         self.next_id = 0
@@ -232,8 +198,6 @@ class AthleteTracker:
         used_tracks = set()
         used_dets = set()
 
-        # For the usual BJJ case (two athletes), test all possible assignments
-        # and select the globally lowest cost instead of greedy matching.
         if track_ids and det_indices:
             best_pairs = []
             best_total = float("inf")
@@ -257,7 +221,6 @@ class AthleteTracker:
                     used_tracks.add(track_id)
                     used_dets.add(det_idx)
 
-        # Unmatched detections start new tracks.
         for det_idx, detection in enumerate(detections):
             if det_idx in used_dets:
                 continue
@@ -271,7 +234,6 @@ class AthleteTracker:
                 "last_seen": timestamp,
             }
 
-        # Update matched track appearance/position using temporal smoothing.
         for det_idx, track_id in assigned.items():
             detection = detections[det_idx]
             track = self.tracks[track_id]
@@ -286,7 +248,6 @@ class AthleteTracker:
                         (1.0 - FEATURE_EMA_ALPHA) * old
                         + FEATURE_EMA_ALPHA * new_feature
                     )
-                    # Re-normalize histogram after EMA.
                     total = float(np.sum(blended))
                     if total > 0:
                         blended /= total
@@ -310,9 +271,7 @@ class AthleteTracker:
 
         return detections
 
-
 def detect_poses(result, frame, tracker, timestamp):
-    """Convert pose results to detections and assign persistent athlete IDs."""
     detections = []
 
     for detection_index, landmarks in enumerate(result.pose_landmarks):
@@ -339,7 +298,7 @@ def detect_poses(result, frame, tracker, timestamp):
         landmarks = detection["landmarks_raw"]
 
         person_data = {
-            "person_id": int(person_id),  # persistent ID, not MediaPipe index
+            "person_id": int(person_id),
             "detection_index": int(detection["detection_index"]),
             "identity_match_cost": detection.get("match_cost"),
             "landmarks": [
@@ -359,15 +318,14 @@ def detect_poses(result, frame, tracker, timestamp):
 
     return persons, detections
 
-
 def draw_skeleton(frame, detections):
-    """Draw skeletons using persistent athlete IDs and stable colors."""
     height, width = frame.shape[:2]
 
     for detection in detections:
         person_id = detection["person_id"]
         landmarks = detection["landmarks_raw"]
-        color = PERSON_COLORS[person_id % len(PERSON_COLORS)]
+
+        color = get_person_color(person_id)
 
         points = []
         for landmark in landmarks:
@@ -402,7 +360,6 @@ def draw_skeleton(frame, detections):
 
     return frame
 
-
 def process_video(
     video_path: str,
     output_path: str,
@@ -411,7 +368,6 @@ def process_video(
     sample_rate: float,
     max_poses: int,
 ):
-    """Analyze video and export skeleton overlay plus landmark JSON."""
     if not os.path.isfile(video_path):
         raise FileNotFoundError(f"Input video not found: {video_path}")
     if sample_rate <= 0:
@@ -498,14 +454,13 @@ def process_video(
 
                     except Exception as error:
                         print(
-                            f"\\nPose detection error at frame {frame_index}: {error}",
+                            f"\nPose detection error at frame {frame_index}: {error}",
                             file=sys.stderr,
                         )
                         last_detections = []
 
                     last_analysis_time = timestamp_seconds
 
-                # Draw last analyzed poses on intervening video frames.
                 if last_detections:
                     frame = draw_skeleton(frame, last_detections)
 
@@ -521,6 +476,28 @@ def process_video(
                     frame, f"Detected: {len(last_detections)}", (20, 105),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
                 )
+
+                for i in range(min(len(last_detections), len(PERSON_COLORS_BGR))):
+                    person_id = last_detections[i]["person_id"]
+                    color = get_person_color(person_id)
+                    cv2.putText(
+                        frame,
+                        f"Athlete {person_id}",
+                        (20, 140 + i * 35),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (255, 255, 255),
+                        2,
+                    )
+                    cv2.putText(
+                        frame,
+                        f"color: {color}",
+                        (20, 140 + i * 35 + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        color,
+                        2,
+                    )
 
                 writer.write(frame)
                 frame_index += 1
@@ -548,6 +525,7 @@ def process_video(
                 "max_lost_seconds": MAX_TRACK_LOST_SECONDS,
                 "max_match_cost": MAX_MATCH_COST,
             },
+            "color_format": "BGR",
         },
         "frames": frames_data,
     }
@@ -555,43 +533,7 @@ def process_video(
     with open(json_path, "w", encoding="utf-8") as file:
         json.dump(output_data, file, indent=2, ensure_ascii=False)
 
-    print("\\nAnalysis complete!")
+    print("\nAnalysis complete!")
     print(f"Output video: {output_path}")
     print(f"Output JSON: {json_path}")
     print(f"Analyzed frames: {len(frames_data)}")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Local BJJ pose analyzer with persistent athlete IDs"
-    )
-    parser.add_argument("--input", required=True, help="Input video path")
-    parser.add_argument("--output", default="output.mp4", help="Output video path")
-    parser.add_argument("--json", default="output.json", help="Output JSON path")
-    parser.add_argument("--model", required=True, help="Path to MediaPipe .task model")
-    parser.add_argument(
-        "--sample-rate", type=float, default=10.0,
-        help="Pose analysis rate in FPS"
-    )
-    parser.add_argument(
-        "--max-poses", type=int, default=2,
-        help="Maximum number of detected people"
-    )
-    args = parser.parse_args()
-
-    try:
-        process_video(
-            video_path=args.input,
-            output_path=args.output,
-            json_path=args.json,
-            model_path=args.model,
-            sample_rate=args.sample_rate,
-            max_poses=args.max_poses,
-        )
-    except Exception as error:
-        print(f"\\nERROR: {error}", file=sys.stderr)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
