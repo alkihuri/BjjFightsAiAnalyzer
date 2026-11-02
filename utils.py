@@ -277,3 +277,12 @@ class AthleteTracker:
             )
 
         return detections
+
+ 
+def write_athlete_stats_to_file(filepath, athlete_stats, mode="w") -> None:
+    with open(filepath, mode, encoding="utf-8") as file:
+        file.write(f"Athlete ID: {athlete_stats.athlete_id}\n")
+        file.write(f"Average Speed: {athlete_stats.get_average_speed():.2f}\n")
+        # file.write("Speed Samples:\n")
+        for speed in athlete_stats.speed_samples:
+            file.write(f"  {speed:.2f}\n")

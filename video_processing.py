@@ -1,13 +1,16 @@
 import json
 import os
 import sys
+from itertools import permutations
+from pathlib import Path
 import cv2
 import mediapipe as mp
 import numpy as np
 from tqdm import tqdm
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from utils import *
+from AthleteStats import AthleteStats
+from utils import PERSON_COLORS_BGR, get_person_color, write_athlete_stats_to_file
 
 # ---------------------------------------------------------
 # MediaPipe Pose Landmarker
@@ -249,6 +252,25 @@ class AthleteTracker:
             detection = detections[det_idx]
             track = self.tracks[track_id]
 
+            # Calculate movement before updating the tracked center.  Coordinates
+            # are normalized to the frame dimensions, so speed is expressed in
+            # normalized-frame-units per second rather than a physical unit.
+            previous_center = track["center"]
+            previous_seen = track["last_seen"]
+            if (
+                detection["center"] is not None
+                and previous_center is not None
+                and timestamp > previous_seen
+            ):
+                detection["speed"] = float(
+                    np.linalg.norm(detection["center"] - previous_center)
+                    / (timestamp - previous_seen)
+                )
+            else:
+                # First observation (or unavailable torso) has no measurable
+                # displacement; emit a numeric value for a stable output schema.
+                detection["speed"] = 0.0
+
             new_feature = detection["feature"]
             if new_feature is not None:
                 if track["feature"] is None:
@@ -312,6 +334,7 @@ def detect_poses(result, frame, tracker, timestamp):
             "person_id": int(person_id),
             "detection_index": int(detection["detection_index"]),
             "identity_match_cost": detection.get("match_cost"),
+            "speed": float(detection["speed"]),
             "landmarks": [
                 landmark_to_dict(lm, i)
                 for i, lm in enumerate(landmarks)
@@ -376,6 +399,7 @@ def save_result_to_txt(persons_data):
         for person_data in persons_data:
             file.write(f"Person ID: {person_data['person_id']}\n")
             file.write(f"Detection Index: {person_data['detection_index']}\n")
+            file.write(f"Speed: {person_data['speed']:.6f}\n")
             if 'identity_match_cost' in person_data:
                 file.write(f"Identity Match Cost: {person_data['identity_match_cost']}\n")
             file.write("Landmarks:\n")
@@ -442,6 +466,7 @@ def process_video(
     last_analysis_time = -1.0
     last_detections = []
     tracker = AthleteTracker()
+    athlete_stats_by_id = {}
 
     try:
         detector = load_model(model_path, max_poses)
@@ -478,6 +503,14 @@ def process_video(
                             "timestamp": timestamp_seconds,
                             "persons": persons_data,
                         })
+
+                        # Keep separate speed histories for every persistent ID.
+                        for detection in last_detections:
+                            athlete_id = detection["person_id"]
+                            stats = athlete_stats_by_id.setdefault(
+                                athlete_id, AthleteStats(athlete_id=athlete_id)
+                            )
+                            stats.add_speed(detection["speed"])
 
                     except Exception as error:
                         print(
@@ -554,6 +587,15 @@ def process_video(
             },
             "color_format": "BGR",
         },
+        "athletes": [
+            {
+                "person_id": athlete_id,
+                "average_speed": stats.get_average_speed(),
+                #"speed_samples": stats.speed_samples,
+                "speed_unit": "normalized_frame_units_per_second",
+            }
+            for athlete_id, stats in sorted(athlete_stats_by_id.items())
+        ],
         "frames": frames_data,
     }
 
@@ -567,3 +609,9 @@ def process_video(
 
     # Save result to result.txt
     save_result_to_txt([person for frame_data in frames_data for person in frame_data['persons']])
+
+    # Write separate statistics for each athlete.
+    for index, stats in enumerate(athlete_stats_by_id.values()):
+        write_athlete_stats_to_file(
+            "athlete_stats.txt", stats, mode="w" if index == 0 else "a"
+        )
