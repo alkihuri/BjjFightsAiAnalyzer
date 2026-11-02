@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import cv2
@@ -58,6 +59,16 @@ MAX_MATCH_COST = 0.82
 COLOR_WEIGHT = 0.75
 POSITION_WEIGHT = 0.25
 FEATURE_EMA_ALPHA = 0.25
+
+# Обратная совместимость: то же самое, но под старым именем.
+PERSON_COLORS = PERSON_COLORS_BGR = [
+    (0, 255, 0),      # Зелёный  (B=0,   G=255, R=0)
+    (0, 165, 255),    # Оранжевый (B=0,   G=165, R=255)
+    (255, 0, 255),    # Фиолетовый (B=255, G=0,  R=255)
+    (255, 255, 0),    # Голубой   (B=255, G=255, R=0)
+    (255, 0, 0),      # Синий     (B=255, G=0,  R=0)
+    (0, 0, 255),      # Красный   (B=0,   G=0,  R=255)
+]
 
 def get_person_color(person_id: int):
     """Возвращает цвет в формате BGR для данного person_id."""
@@ -360,6 +371,22 @@ def draw_skeleton(frame, detections):
 
     return frame
 
+def save_result_to_txt(persons_data):
+    with open("result.txt", "w", encoding="utf-8") as file:
+        for person_data in persons_data:
+            file.write(f"Person ID: {person_data['person_id']}\n")
+            file.write(f"Detection Index: {person_data['detection_index']}\n")
+            if 'identity_match_cost' in person_data:
+                file.write(f"Identity Match Cost: {person_data['identity_match_cost']}\n")
+            file.write("Landmarks:\n")
+            for landmark in person_data['landmarks']:
+                file.write(f"  {landmark['name']}: ({landmark['x']}, {landmark['y']}, {landmark['z']})\n")
+            if 'world_landmarks' in person_data:
+                file.write("World Landmarks:\n")
+                for landmark in person_data['world_landmarks']:
+                    file.write(f"  {landmark['name']}: ({landmark['x']}, {landmark['y']}, {landmark['z']})\n")
+            file.write("\n")
+
 def process_video(
     video_path: str,
     output_path: str,
@@ -537,3 +564,6 @@ def process_video(
     print(f"Output video: {output_path}")
     print(f"Output JSON: {json_path}")
     print(f"Analyzed frames: {len(frames_data)}")
+
+    # Save result to result.txt
+    save_result_to_txt([person for frame_data in frames_data for person in frame_data['persons']])
