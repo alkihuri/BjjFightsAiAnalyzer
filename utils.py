@@ -282,7 +282,8 @@ class AthleteTracker:
 def write_athlete_stats_to_file(filepath, athlete_stats, mode="w") -> None:
     with open(filepath, mode, encoding="utf-8") as file:
         file.write(f"Athlete ID: {athlete_stats.athlete_id}\n")
-        file.write(f"Average Speed: {athlete_stats.get_average_speed():.2f}\n")
-        # file.write("Speed Samples:\n")
-        for speed in athlete_stats.speed_samples:
-            file.write(f"  {speed:.2f}\n")
+        file.write(f"Average Speed: {athlete_stats.get_average_speed():.6f}\n")
+        file.write(f"Standup Time (s): {athlete_stats.standuptime:.2f}\n")
+        file.write(f"Parter Time (s): {athlete_stats.partertime:.2f}\n")
+        file.write(f"Unknown Posture Time (s): {athlete_stats.unknown_posture_time:.2f}\n")
+        file.write(f"Explosive Moments: {len(athlete_stats.explosive_moments)}\n\n")

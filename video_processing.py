@@ -62,6 +62,8 @@ MAX_MATCH_COST = 0.82
 COLOR_WEIGHT = 0.75
 POSITION_WEIGHT = 0.25
 FEATURE_EMA_ALPHA = 0.25
+STANDING_MIN_ANGLE_DEGREES = 60.0
+GROUND_MAX_ANGLE_DEGREES = 30.0
 
 # Обратная совместимость: то же самое, но под старым именем.
 PERSON_COLORS = PERSON_COLORS_BGR = [
@@ -117,6 +119,36 @@ def world_landmark_to_dict(landmark, index):
         "y": float(landmark.y),
         "z": float(landmark.z),
     }
+
+def classify_posture(landmarks, frame_width, frame_height):
+    """Classify shoulder-to-hip axis: vertical is standing, horizontal is ground."""
+    required = [11, 12, 23, 24]
+    if len(landmarks) <= max(required):
+        return "unknown", None
+    if any(getattr(landmarks[index], "visibility", 1.0) < 0.25 for index in required):
+        return "unknown", None
+
+    shoulders = np.array([
+        (landmarks[11].x + landmarks[12].x) / 2.0,
+        (landmarks[11].y + landmarks[12].y) / 2.0,
+    ])
+    hips = np.array([
+        (landmarks[23].x + landmarks[24].x) / 2.0,
+        (landmarks[23].y + landmarks[24].y) / 2.0,
+    ])
+    # Landmarks are normalized independently by width and height.  Convert to
+    # pixel proportions before measuring the physical screen angle.
+    axis = (hips - shoulders) * np.array([frame_width, frame_height])
+    if np.linalg.norm(axis) == 0:
+        return "unknown", None
+
+    # An undirected axis is in [0, 90]: 90 is vertical and 0 horizontal.
+    angle = float(np.degrees(np.arctan2(abs(axis[1]), abs(axis[0]))))
+    if angle >= STANDING_MIN_ANGLE_DEGREES:  # 90° ± 30°
+        return "standing", angle
+    if angle <= GROUND_MAX_ANGLE_DEGREES:
+        return "ground", angle
+    return "unknown", angle
 
 def get_torso_feature(frame, landmarks):
     h, w = frame.shape[:2]
@@ -325,6 +357,14 @@ def detect_poses(result, frame, tracker, timestamp):
 
     detections = tracker.update(detections, timestamp)
 
+    for detection in detections:
+        frame_height, frame_width = frame.shape[:2]
+        posture, angle = classify_posture(
+            detection["landmarks_raw"], frame_width, frame_height
+        )
+        detection["posture"] = posture
+        detection["torso_angle_degrees"] = angle
+
     persons = []
     for detection in detections:
         person_id = detection["person_id"]
@@ -335,6 +375,8 @@ def detect_poses(result, frame, tracker, timestamp):
             "detection_index": int(detection["detection_index"]),
             "identity_match_cost": detection.get("match_cost"),
             "speed": float(detection["speed"]),
+            "posture": detection["posture"],
+            "torso_angle_degrees": detection["torso_angle_degrees"],
             "landmarks": [
                 landmark_to_dict(lm, i)
                 for i, lm in enumerate(landmarks)
@@ -411,6 +453,77 @@ def save_result_to_txt(persons_data):
                     file.write(f"  {landmark['name']}: ({landmark['x']}, {landmark['y']}, {landmark['z']})\n")
             file.write("\n")
 
+def build_overall_statistics(athlete_stats_by_id):
+    """Return arithmetic means across athletes for the end-of-file summary."""
+    stats_list = list(athlete_stats_by_id.values())
+    if not stats_list:
+        return {
+            "athlete_count": 0,
+            "average_speed": 0.0,
+            "average_standup_time_seconds": 0.0,
+            "average_parter_time_seconds": 0.0,
+            "average_unknown_posture_time_seconds": 0.0,
+            "average_explosive_moment_count": 0.0,
+        }
+    count = len(stats_list)
+    return {
+        "athlete_count": count,
+        "average_speed": sum(item.get_average_speed() for item in stats_list) / count,
+        "average_standup_time_seconds": sum(item.standuptime for item in stats_list) / count,
+        "average_parter_time_seconds": sum(item.partertime for item in stats_list) / count,
+        "average_unknown_posture_time_seconds": (
+            sum(item.unknown_posture_time for item in stats_list) / count
+        ),
+        "average_explosive_moment_count": (
+            sum(len(item.explosive_moments) for item in stats_list) / count
+        ),
+    }
+
+def draw_overall_statistics(frame, overall_stats):
+    """Draw the live all-athlete summary in a readable panel on the right."""
+    lines = [
+        "Overall averages across athletes",
+        #f"Athlete Count: {overall_stats['athlete_count']}",
+        f"Average Speed: {overall_stats['average_speed']:.6f}",
+        f"Average Standup Time (s): {overall_stats['average_standup_time_seconds']:.2f}",
+        f"Average Parter Time (s): {overall_stats['average_parter_time_seconds']:.2f}",
+        f"Average Unknown Posture Time (s): {overall_stats['average_unknown_posture_time_seconds']:.2f}",
+        f"Average Explosive Moments: {overall_stats['average_explosive_moment_count']:.2f}",
+    ]
+    height, width = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1 if width >= 960 else 1.2
+    thickness = 1
+    padding = 12
+    line_height = int(26 * (font_scale / 0.5))
+    text_width = max(cv2.getTextSize(line, font, font_scale, thickness)[0][0] for line in lines)
+    panel_width = min(text_width + 2 * padding, width - 10)
+    panel_height = line_height * len(lines) + 2 * padding
+    x1 = max(5, width - panel_width - 15)
+    y1 = 15
+    x2 = min(width - 5, x1 + panel_width)
+    y2 = min(height - 5, y1 + panel_height)
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (20, 20, 20), thickness=-1)
+    cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)
+    for index, line in enumerate(lines):
+        y = y1 + padding + (index + 1) * line_height - 6
+        cv2.putText(
+            frame, line, (x1 + padding, y), font, font_scale,
+            (255, 255, 255), thickness, cv2.LINE_AA,
+        )
+
+def write_overall_stats_to_file(filepath, overall_stats):
+    with open(filepath, "a", encoding="utf-8") as file:
+        file.write("Overall averages across athletes\n")
+        file.write(f"Athlete Count: {overall_stats['athlete_count']}\n")
+        file.write(f"Average Speed: {overall_stats['average_speed']:.6f}\n")
+        file.write(f"Average Standup Time (s): {overall_stats['average_standup_time_seconds']:.2f}\n")
+        file.write(f"Average Parter Time (s): {overall_stats['average_parter_time_seconds']:.2f}\n")
+        file.write(f"Average Unknown Posture Time (s): {overall_stats['average_unknown_posture_time_seconds']:.2f}\n")
+        file.write(f"Average Explosive Moments: {overall_stats['average_explosive_moment_count']:.2f}\n")
+
 def process_video(
     video_path: str,
     output_path: str,
@@ -467,6 +580,7 @@ def process_video(
     last_detections = []
     tracker = AthleteTracker()
     athlete_stats_by_id = {}
+    overall_stats = build_overall_statistics(athlete_stats_by_id)
 
     try:
         detector = load_model(model_path, max_poses)
@@ -498,19 +612,39 @@ def process_video(
                             result, frame, tracker, timestamp_seconds
                         )
 
-                        frames_data.append({
-                            "frame_index": frame_index,
-                            "timestamp": timestamp_seconds,
-                            "persons": persons_data,
-                        })
-
                         # Keep separate speed histories for every persistent ID.
                         for detection in last_detections:
                             athlete_id = detection["person_id"]
                             stats = athlete_stats_by_id.setdefault(
                                 athlete_id, AthleteStats(athlete_id=athlete_id)
                             )
-                            stats.add_speed(detection["speed"])
+                            activity_average, is_explosive = stats.add_observation(
+                                timestamp_seconds,
+                                detection["speed"],
+                                detection["posture"],
+                            )
+                            detection["activity_average_10s"] = activity_average
+                            detection["is_explosive_moment"] = is_explosive
+
+                        activity_by_id = {
+                            detection["person_id"]: detection
+                            for detection in last_detections
+                        }
+                        for person_data in persons_data:
+                            activity = activity_by_id[person_data["person_id"]]
+                            person_data["activity_average_10s"] = activity[
+                                "activity_average_10s"
+                            ]
+                            person_data["is_explosive_moment"] = activity[
+                                "is_explosive_moment"
+                            ]
+
+                        frames_data.append({
+                            "frame_index": frame_index,
+                            "timestamp": timestamp_seconds,
+                            "persons": persons_data,
+                        })
+                        overall_stats = build_overall_statistics(athlete_stats_by_id)
 
                     except Exception as error:
                         print(
@@ -523,6 +657,8 @@ def process_video(
 
                 if last_detections:
                     frame = draw_skeleton(frame, last_detections)
+
+                draw_overall_statistics(frame, overall_stats)
 
                 cv2.putText(
                     frame, f"Video FPS: {fps:.1f}", (20, 35),
@@ -587,15 +723,13 @@ def process_video(
             },
             "color_format": "BGR",
         },
-        "athletes": [
-            {
-                "person_id": athlete_id,
-                "average_speed": stats.get_average_speed(),
-                #"speed_samples": stats.speed_samples,
-                "speed_unit": "normalized_frame_units_per_second",
-            }
+        "athletes": [stats.to_dict() for _, stats in sorted(athlete_stats_by_id.items())],
+        "activity_timeline": [
+            {"person_id": athlete_id, **moment}
             for athlete_id, stats in sorted(athlete_stats_by_id.items())
+            for moment in stats.explosive_moments
         ],
+        "overall_statistics": build_overall_statistics(athlete_stats_by_id),
         "frames": frames_data,
     }
 
@@ -615,3 +749,6 @@ def process_video(
         write_athlete_stats_to_file(
             "athlete_stats.txt", stats, mode="w" if index == 0 else "a"
         )
+    write_overall_stats_to_file(
+        "athlete_stats.txt", build_overall_statistics(athlete_stats_by_id)
+    )
