@@ -137,3 +137,8 @@ This script contains utility functions and constants used across the project, in
 ```
 
 This README.md file provides a comprehensive overview of the project, including its key features, dependencies, installation instructions, and usage instructions. It also includes a detailed analysis of the core logic implemented in `video_processing.py`.
+
+
+run
+
+python bjj_tempo.py --model pose_landmarker_lite.task --source 0 --reference reference_match.mp4
