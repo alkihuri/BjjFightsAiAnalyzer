@@ -479,6 +479,7 @@ def build_overall_statistics(athlete_stats_by_id):
         ),
     }
 
+
 def draw_overall_statistics(frame, overall_stats):
     """Draw the live all-athlete summary in a readable panel on the right."""
     lines = [
@@ -492,15 +493,15 @@ def draw_overall_statistics(frame, overall_stats):
     ]
     height, width = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 1 if width >= 960 else 1.2
+    font_scale = 0.4 if width >= 960 else 0.4
     thickness = 1
-    padding = 12
+    padding = 3
     line_height = int(26 * (font_scale / 0.5))
     text_width = max(cv2.getTextSize(line, font, font_scale, thickness)[0][0] for line in lines)
     panel_width = min(text_width + 2 * padding, width - 10)
     panel_height = line_height * len(lines) + 2 * padding
     x1 = max(5, width - panel_width - 15)
-    y1 = 15
+    y1 = max(5, height - panel_height - 15)
     x2 = min(width - 5, x1 + panel_width)
     y2 = min(height - 5, y1 + panel_height)
 
@@ -508,12 +509,14 @@ def draw_overall_statistics(frame, overall_stats):
     cv2.rectangle(overlay, (x1, y1), (x2, y2), (20, 20, 20), thickness=-1)
     cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)
     for index, line in enumerate(lines):
-        y = y1 + padding + (index + 1) * line_height - 6
+        y = y1 + padding + (index + 1) * line_height - 2
         cv2.putText(
             frame, line, (x1 + padding, y), font, font_scale,
             (255, 255, 255), thickness, cv2.LINE_AA,
         )
 
+
+ 
 def write_overall_stats_to_file(filepath, overall_stats):
     with open(filepath, "a", encoding="utf-8") as file:
         file.write("Overall averages across athletes\n")
@@ -664,18 +667,18 @@ def process_video(
 
                 draw_overall_statistics(frame, overall_stats)
 
-                cv2.putText(
-                    frame, f"Video FPS: {fps:.1f}", (20, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
-                )
-                cv2.putText(
-                    frame, f"Time: {timestamp_seconds:.2f}s", (20, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
-                )
-                cv2.putText(
-                    frame, f"Detected: {len(last_detections)}", (20, 105),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
-                )
+               # cv2.putText(
+               #     frame, f"Video FPS: {fps:.1f}", (20, 35),
+               #     cv2.FONT_HERSHEY_SIMPLEX, 0.1, (255, 255, 255), 2
+               # )
+               # cv2.putText(
+               #     frame, f"Time: {timestamp_seconds:.2f}s", (20, 70),
+               #     cv2.FONT_HERSHEY_SIMPLEX, 0.1, (255, 255, 255), 2
+               # )
+               # cv2.putText(
+               #     frame, f"Detected: {len(last_detections)}", (20, 105),
+               #     cv2.FONT_HERSHEY_SIMPLEX, 0.1, (255, 255, 255), 2
+               # )
 
                 for i in range(min(len(last_detections), len(PERSON_COLORS_BGR))):
                     person_id = last_detections[i]["person_id"]
@@ -685,7 +688,7 @@ def process_video(
                         f"Athlete {person_id}",
                         (20, 140 + i * 35),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
+                        0.1,
                         (255, 255, 255),
                         2,
                     )
@@ -694,7 +697,7 @@ def process_video(
                         f"color: {color}",
                         (20, 140 + i * 35 + 20),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
+                        0.1,
                         color,
                         2,
                     )

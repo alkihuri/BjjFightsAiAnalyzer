@@ -146,3 +146,15 @@ python3 openmatanalyzer.py --model pose_landmarker_lite.task --source 0 \
     --record-dir recordings --record-fps 30 --record-fourcc mp4v \
     --record-max-minutes 20
 python3 openmatanalyzer.py --model pose_landmarker_lite.task --source 0 --no-record
+
+
+
+
+
+python2 main.py \
+  --input fight.mp4 \
+  --output analyzed_fight.mp4 \
+  --json fight_data.json \
+  --model pose_landmarker_lite.task \
+  --sample-rate 10 \
+  --max-poses 2

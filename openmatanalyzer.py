@@ -442,7 +442,7 @@ def main():
                 break
 
             # Write raw frame to disk BEFORE any drawing/overlays.
-            №
+            
             #if recorder is not None:
             #    recorder.write(frame)
 
