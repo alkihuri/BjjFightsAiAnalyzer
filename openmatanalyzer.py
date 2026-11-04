@@ -1,5 +1,5 @@
 """
-BJJ Live Tempo Analyzer — prototype
+BJJ Live Tempo Analyzer — prototype (with session recording)
 
 Requirements:
     pip install opencv-python mediapipe numpy
@@ -15,15 +15,22 @@ Keys:
     q = quit
     r = record a 10-second reference from the current camera
     c = clear current reference
+    v = pause / resume session recording
     +/- = change tracking/pairing sensitivity
+
+Recording:
+    Every session is written to <record-dir>/session_YYYYMMDD_HHMMSS.mp4
+    (only the raw camera frame, no overlays). Disable with --no-record.
 
 Notes:
 - This is a prototype. Pose detection and tracking may fail under heavy occlusion.
 - "Tempo" is an image-space activity score, not a validated physiological intensity metric.
-- No video is saved. Frames and short tracking history stay in RAM.
+- Video files are written to disk when recording is enabled; tracking history stays in RAM.
 """
 
 import argparse
+import datetime
+import os
 import time
 from collections import defaultdict, deque
 
@@ -100,6 +107,7 @@ def torso_color(frame, points, visibility):
 
 class PoseTracker:
     """Simple greedy tracker using center distance + torso color."""
+
     def __init__(self, max_distance=0.22, max_lost=12):
         self.max_distance = max_distance
         self.max_lost = max_lost
@@ -145,7 +153,7 @@ class PoseTracker:
                     "visibility": det["visibility"].copy(),
                     "last_activity": 0.0,
                     "lost": 0,
-            }
+                }
 
         for di, det in enumerate(detections):
             tid = assignments[di]
@@ -216,6 +224,24 @@ def detect_poses(frame, landmarker):
     return detections
 
 
+def detect_poses_video(frame, landmarker, timestamp_ms):
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+    result = landmarker.detect_for_video(mp_image, timestamp_ms)
+    detections = []
+    for landmarks in result.pose_landmarks:
+        points, visibility = get_pose_points(landmarks)
+        center, scale = pose_center_and_scale(points, visibility)
+        if center is None:
+            continue
+        detections.append({
+            "points": points, "visibility": visibility,
+            "center": center, "scale": scale,
+            "color": torso_color(frame, points, visibility),
+        })
+    return detections
+
+
 def pair_people(detections, max_relative_distance=1.8):
     """Greedy nearest-neighbor pairs. Pairing is approximate in crowded scenes."""
     pairs = []
@@ -263,15 +289,16 @@ def load_reference_activity(model_path, video_path, num_poses=30):
     activities = []
     timestamp_ms = 0
     frame_index = 0
+    fps = max(cap.get(cv2.CAP_PROP_FPS), 1.0)
 
     while True:
         ok, frame = cap.read()
         if not ok:
             break
         frame_index += 1
-        timestamp_ms = int(frame_index * 1000 / max(cap.get(cv2.CAP_PROP_FPS), 1))
+        timestamp_ms = int(frame_index * 1000 / fps)
         detections = detect_poses_video(frame, landmarker, timestamp_ms)
-        detections = tracker.update(detections, dt=1.0 / max(cap.get(cv2.CAP_PROP_FPS), 1.0))
+        detections = tracker.update(detections, dt=1.0 / fps)
         if detections:
             activities.append(float(np.mean([d["activity"] for d in detections])))
 
@@ -282,22 +309,60 @@ def load_reference_activity(model_path, video_path, num_poses=30):
     return float(np.mean(activities))
 
 
-def detect_poses_video(frame, landmarker, timestamp_ms):
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    result = landmarker.detect_for_video(mp_image, timestamp_ms)
-    detections = []
-    for landmarks in result.pose_landmarks:
-        points, visibility = get_pose_points(landmarks)
-        center, scale = pose_center_and_scale(points, visibility)
-        if center is None:
-            continue
-        detections.append({
-            "points": points, "visibility": visibility,
-            "center": center, "scale": scale,
-            "color": torso_color(frame, points, visibility),
-        })
-    return detections
+class SessionRecorder:
+    """Synchronous MP4 session recorder. Codec work happens in C, cheap per frame.
+
+    Writes the raw camera frame (before overlays) to <out_dir>/session_*.mp4.
+    Falls back to 'mp4v' if the requested FourCC is unavailable.
+    """
+
+    def __init__(self, out_dir, fps, fourcc="mp4v", max_seconds=1800.0):
+        self.out_dir = out_dir
+        self.fps = float(fps) if fps and fps > 0 else 30.0
+        self.fourcc = fourcc
+        self.max_seconds = max_seconds  # 0 = disable rotation
+        self.writer = None
+        self.path = None
+        self.started_at = 0.0
+        os.makedirs(self.out_dir, exist_ok=True)
+
+    def _open(self, frame):
+        h, w = frame.shape[:2]
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.path = os.path.join(self.out_dir, f"session_{ts}.mp4")
+
+        vw = cv2.VideoWriter(
+            self.path,
+            cv2.VideoWriter_fourcc(*self.fourcc),
+            self.fps, (w, h),
+        )
+        if not vw.isOpened() and self.fourcc != "mp4v":
+            vw = cv2.VideoWriter(
+                self.path,
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                self.fps, (w, h),
+            )
+        if not vw.isOpened():
+            raise RuntimeError(f"Cannot open VideoWriter: {self.path}")
+
+        self.writer = vw
+        self.started_at = time.time()
+        print(f"[REC] -> {self.path}")
+
+    def write(self, frame):
+        if self.writer is None:
+            self._open(frame)
+        elif self.max_seconds and (time.time() - self.started_at) > self.max_seconds:
+            # Rotate long sessions so we never produce a single huge file.
+            self.close()
+            self._open(frame)
+        self.writer.write(frame)
+
+    def close(self):
+        if self.writer is not None:
+            self.writer.release()
+            print(f"[REC] saved: {self.path}")
+        self.writer = None
 
 
 def main():
@@ -308,12 +373,35 @@ def main():
     parser.add_argument("--num-poses", type=int, default=30)
     parser.add_argument("--window", type=float, default=8.0,
                         help="Activity smoothing window in seconds")
+
+    # Recording options
+    parser.add_argument("--record-dir", default="recordings",
+                        help="Folder for .mp4 sessions (empty string = disabled)")
+    parser.add_argument("--record-fps", type=float, default=0.0,
+                        help="Recording FPS, 0 = use camera FPS")
+    parser.add_argument("--record-fourcc", default="mp4v",
+                        help="mp4v (safe) | avc1 | XVID")
+    parser.add_argument("--record-max-minutes", type=float, default=30.0,
+                        help="Rotate file after N minutes, 0 = no rotation")
+    parser.add_argument("--no-record", action="store_true",
+                        help="Disable session recording entirely")
     args = parser.parse_args()
 
     source = int(args.source) if args.source.isdigit() else args.source
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open camera/video: {args.source}")
+
+    def make_recorder():
+        if args.no_record or not args.record_dir:
+            return None
+        fps = args.record_fps or cap.get(cv2.CAP_PROP_FPS) or 30.0
+        return SessionRecorder(
+            args.record_dir, fps, args.record_fourcc,
+            max_seconds=args.record_max_minutes * 60.0,
+        )
+
+    recorder = make_recorder()
 
     base_options = python.BaseOptions(model_asset_path=args.model)
     options = vision.PoseLandmarkerOptions(
@@ -344,13 +432,18 @@ def main():
     record_values = []
 
     pair_distance = 1.8
-    print("Running. Press q to quit, r to record 10-second reference, c to clear.")
+    print("Running. Press q to quit, r to record 10-second reference, c to clear, "
+          "v to pause/resume recording.")
 
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
+
+            # Write raw frame to disk BEFORE any drawing/overlays.
+            if recorder is not None:
+                recorder.write(frame)
 
             now = time.time()
             dt = max(now - last_frame_time, 1e-3)
@@ -456,6 +549,12 @@ def main():
                             (15, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                             (0, 255, 255), 2)
 
+            # Recording indicator (raw frames written silently in background).
+            if recorder is not None and recorder.writer is not None:
+                cv2.circle(frame, (25, 100), 8, (0, 0, 255), -1)
+                cv2.putText(frame, "REC", (40, 106),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
             cv2.imshow("BJJ Live Tempo Analyzer", frame)
             key = cv2.waitKey(1) & 0xFF
 
@@ -468,6 +567,15 @@ def main():
             elif key == ord("c"):
                 reference = None
                 print("Reference cleared.")
+            elif key == ord("v"):
+                if recorder is not None:
+                    recorder.close()
+                    recorder = None
+                    print("Recording paused.")
+                else:
+                    recorder = make_recorder()
+                    if recorder is not None:
+                        print("Recording resumed.")
             elif key in (ord("+"), ord("=")):
                 pair_distance = min(3.0, pair_distance + 0.1)
                 print(f"Pairing distance: {pair_distance:.1f}")
@@ -482,6 +590,10 @@ def main():
         print("Session state durations (RAM only):")
         for state in ("GREEN", "YELLOW", "RED"):
             print(f"  {state}: {state_durations.get(state, 0.0):.1f} sec")
+
+        if recorder is not None:
+            recorder.close()
+
         cap.release()
         landmarker.close()
         cv2.destroyAllWindows()

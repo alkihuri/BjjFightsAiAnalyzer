@@ -141,4 +141,8 @@ This README.md file provides a comprehensive overview of the project, including 
 
 run
 
-python bjj_tempo.py --model pose_landmarker_lite.task --source 0 --reference reference_match.mp4
+python3 openmatanalyzer.py --model pose_landmarker_lite.task --source 0
+python3 openmatanalyzer.py --model pose_landmarker_lite.task --source 0 \
+    --record-dir recordings --record-fps 30 --record-fourcc mp4v \
+    --record-max-minutes 20
+python3 openmatanalyzer.py --model pose_landmarker_lite.task --source 0 --no-record
