@@ -442,8 +442,9 @@ def main():
                 break
 
             # Write raw frame to disk BEFORE any drawing/overlays.
-            if recorder is not None:
-                recorder.write(frame)
+            №
+            #if recorder is not None:
+            #    recorder.write(frame)
 
             now = time.time()
             dt = max(now - last_frame_time, 1e-3)
@@ -554,6 +555,11 @@ def main():
                 cv2.circle(frame, (25, 100), 8, (0, 0, 255), -1)
                 cv2.putText(frame, "REC", (40, 106),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+
+              # Write the FINAL overlaid frame (HUD + skeletons + REC dot) to disk.
+            if recorder is not None:
+                recorder.write(frame)
 
             cv2.imshow("BJJ Live Tempo Analyzer", frame)
             key = cv2.waitKey(1) & 0xFF
