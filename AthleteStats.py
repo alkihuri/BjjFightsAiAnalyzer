@@ -8,6 +8,7 @@ EXPLOSIVE_MULTIPLIER = 1.5
 
 TAKEDOWN_CONFIRM_SECONDS = 3.0
 MIN_TRACKED_MOVEMENT = 0.02
+STATE_CONFIRM_SECONDS = 0.2
 
 
 @dataclass
@@ -31,6 +32,9 @@ class AthleteStats:
 
     _last_timestamp: Optional[float] = None
     _last_posture: Optional[str] = None
+    _confirmed_posture: Optional[str] = None
+    _pending_posture: Optional[str] = None
+    _pending_since: Optional[float] = None
 
     _speed_sum: float = 0.0
     _speed_count: int = 0
@@ -73,10 +77,12 @@ class AthleteStats:
 
                 elapsed = timestamp - self._last_timestamp
 
-                if self._last_posture == "standing":
+                # A posture that has not survived the confirmation window is
+                # deliberately charged to the preceding confirmed posture.
+                if self._confirmed_posture == "standing":
                     self.standuptime += elapsed
 
-                elif self._last_posture == "ground":
+                elif self._confirmed_posture == "ground":
                     self.partertime += elapsed
 
                 else:
@@ -145,12 +151,29 @@ class AthleteStats:
 
         takedown_confirmed = False
 
-        previous_posture = self._last_posture
+        previous_posture = self._confirmed_posture
+
+        if posture == self._confirmed_posture:
+            self._pending_posture = None
+            self._pending_since = None
+        elif self._pending_posture is None:
+            self._pending_posture = posture
+            self._pending_since = timestamp
+        elif self._pending_posture == posture:
+            if timestamp - self._pending_since >= STATE_CONFIRM_SECONDS:
+                self._confirmed_posture = posture
+                self._pending_posture = None
+                self._pending_since = None
+        else:
+            self._pending_posture = posture
+            self._pending_since = timestamp
+
+        confirmed_posture = self._confirmed_posture
 
         # Start attempt only on standing -> ground
         if (
             previous_posture == "standing"
-            and posture == "ground"
+            and confirmed_posture == "ground"
             and not self._takedown_attempt_active
         ):
 
@@ -161,12 +184,12 @@ class AthleteStats:
         if self._takedown_attempt_active:
 
             # Athlete returned to standing before confirmation
-            if posture == "standing":
+            if confirmed_posture == "standing":
 
                 self._takedown_attempt_active = False
                 self._takedown_attempt_start = None
 
-            elif posture == "ground":
+            elif confirmed_posture == "ground":
 
                 elapsed_ground_time = (
                     timestamp - self._takedown_attempt_start
@@ -193,13 +216,23 @@ class AthleteStats:
         # ----------------------------------
 
         self._last_timestamp = timestamp
-        self._last_posture = posture
+        # The very first observed posture is immediately established as the
+        # baseline; confirmation is only needed for a transition.
+        if self._confirmed_posture is None:
+            self._confirmed_posture = posture
+            self._pending_posture = None
+            self._pending_since = None
+        self._last_posture = self._confirmed_posture
 
         return (
             activity_average,
             is_explosive,
             takedown_confirmed
         )
+
+    def get_confirmed_posture(self) -> str:
+        """Return the stable posture used for timing and event detection."""
+        return self._confirmed_posture or "unknown"
 
     def get_average_speed(self) -> float:
 

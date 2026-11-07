@@ -57,18 +57,21 @@ POSITION_WEIGHT = 0.25
 FEATURE_EMA_ALPHA = 0.25
 
 # Обратная совместимость: то же самое, но под старым именем.
-PERSON_COLORS = PERSON_COLORS_BGR = [
-    (0, 255, 0),      # Зелёный  (B=0,   G=255, R=0)
-    (0, 165, 255),    # Оранжевый (B=0,   G=165, R=255)
-    (255, 0, 255),    # Фиолетовый (B=255, G=0,  R=255)
-    (255, 255, 0),    # Голубой   (B=255, G=255, R=0)
-    (255, 0, 0),      # Синий     (B=255, G=0,  R=0)
-    (0, 0, 255),      # Красный   (B=0,   G=0,  R=255)
-]
+MAX_DEBUG_SLOTS = 10
+
+
+def _build_person_colors():
+    """Create ten evenly spaced, high-saturation BGR colours."""
+    hsv = np.array([[[round(index * 179 / MAX_DEBUG_SLOTS), 220, 255]]
+                    for index in range(MAX_DEBUG_SLOTS)], dtype=np.uint8)
+    return [tuple(map(int, color)) for color in cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0]]
+
+
+PERSON_COLORS = PERSON_COLORS_BGR = _build_person_colors()
 
 def get_person_color(person_id: int):
     """Возвращает цвет в формате BGR для данного person_id."""
-    return PERSON_COLORS_BGR[person_id % len(PERSON_COLORS_BGR)]
+    return PERSON_COLORS_BGR[min(person_id, len(PERSON_COLORS_BGR) - 1)]
 
 def load_model(model_path: str, max_poses: int):
     """Load MediaPipe Pose Landmarker using the modern Tasks API."""
@@ -111,39 +114,38 @@ def world_landmark_to_dict(landmark, index):
         "z": float(landmark.z),
     }
 
-def get_torso_feature(frame, landmarks):
+def get_shoulders_feature_and_color(frame, landmarks):
+    """Return the shoulder histogram, center, and representative BGR color."""
     h, w = frame.shape[:2]
 
-    # MediaPipe indices: shoulders 11/12, hips 23/24.
-    required = [11, 12, 23, 24]
+    required = [11, 12]
     if len(landmarks) <= max(required):
-        return None, None
+        return None, None, None
 
     pts = []
     for idx in required:
         lm = landmarks[idx]
         if getattr(lm, "visibility", 1.0) < 0.25:
-            return None, None
+            return None, None, None
         pts.append((int(lm.x * w), int(lm.y * h)))
 
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
 
-    torso_width = max(max(xs) - min(xs), int(w * 0.04))
-    torso_height = max(max(ys) - min(ys), int(h * 0.04))
+    shoulder_span = max(abs(xs[1] - xs[0]), 1)
+    thickness = max(abs(ys[1] - ys[0]), h * 0.04)
 
-    # Expand the shoulder-to-hip box slightly to capture more clothing.
-    x1 = max(0, int(min(xs) - torso_width * 0.18))
-    x2 = min(w, int(max(xs) + torso_width * 0.18))
-    y1 = max(0, int(min(ys) - torso_height * 0.08))
-    y2 = min(h, int(max(ys) + torso_height * 0.08))
+    x1 = max(0, int(min(xs) - shoulder_span * 0.18))
+    x2 = min(w, int(max(xs) + shoulder_span * 0.18))
+    y1 = max(0, int(min(ys) - thickness * 0.08))
+    y2 = min(h, int(max(ys) + thickness * 0.08))
 
     if x2 <= x1 or y2 <= y1:
-        return None, None
+        return None, None, None
 
     roi = frame[y1:y2, x1:x2]
     if roi.size == 0:
-        return None, None
+        return None, None, None
 
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
@@ -152,20 +154,28 @@ def get_torso_feature(frame, landmarks):
     valid_ratio = float(np.count_nonzero(mask)) / float(mask.size)
 
     if valid_ratio < 0.08:
-        return None, None
+        return None, None, None
 
     hist = cv2.calcHist(
         [hsv], [0, 1], mask, [24, 16], [0, 180, 0, 256]
     )
     cv2.normalize(hist, hist, alpha=1.0, norm_type=cv2.NORM_L1)
 
-    # Approximate torso center, normalized to frame dimensions.
+    # Shoulder midpoint, normalized to frame dimensions.
     center = np.array([
         (min(xs) + max(xs)) / (2.0 * w),
         (min(ys) + max(ys)) / (2.0 * h),
     ], dtype=np.float32)
 
-    return hist.flatten().astype(np.float32), center
+    # Median is robust to small mat/background areas that survive the mask.
+    shoulder_color = tuple(map(int, np.median(roi[mask > 0], axis=0)))
+    return hist.flatten().astype(np.float32), center, shoulder_color
+
+
+def get_shoulders_feature(frame, landmarks):
+    """Return the shoulder color histogram and midpoint used by the tracker."""
+    feature, center, _ = get_shoulders_feature_and_color(frame, landmarks)
+    return feature, center
 
 def color_distance(feature_a, feature_b):
     if feature_a is None or feature_b is None:
