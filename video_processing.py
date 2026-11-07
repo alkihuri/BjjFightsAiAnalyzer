@@ -423,9 +423,10 @@ def draw_skeleton(frame, detections):
         if len(points) > 12:
             shoulder_x = (points[11][0] + points[12][0]) // 2
             shoulder_y = (points[11][1] + points[12][1]) // 2
+            posture = detection["posture"]
             cv2.putText(
                 frame,
-                f"Athlete {person_id}",
+                f"Athlete {person_id} {posture}",
                 (shoulder_x, max(shoulder_y - 20, 20)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
@@ -459,19 +460,19 @@ def build_overall_statistics(athlete_stats_by_id):
     if not stats_list:
         return {
             "athlete_count": 0,
-            "average_speed": 0.0,
-            "average_standup_time_seconds": 0.0,
-            "average_parter_time_seconds": 0.0,
-            "average_unknown_posture_time_seconds": 0.0,
-            "average_explosive_moment_count": 0.0,
+            "speed": 0.0,
+            "standup_time_seconds": 0.0,
+            "parter_time_seconds": 0.0,
+            "unknown_posture_time_seconds": 0.0,
+            "explosive_moment_count": 0.0,
         }
     count = len(stats_list)
     return {
         "athlete_count": count,
-        "average_speed": sum(item.get_average_speed() for item in stats_list) / count,
-        "average_standup_time_seconds": sum(item.standuptime for item in stats_list) / count,
-        "average_parter_time_seconds": sum(item.partertime for item in stats_list) / count,
-        "average_unknown_posture_time_seconds": (
+        "speed": sum(item.get_average_speed() for item in stats_list) / count,
+        "standup_time_seconds": sum(item.standuptime for item in stats_list) / count,
+        "parter_time_seconds": sum(item.partertime for item in stats_list) / count,
+        "unknown_posture_time_seconds": (
             sum(item.unknown_posture_time for item in stats_list) / count
         ),
         "average_explosive_moment_count": (
@@ -485,11 +486,11 @@ def draw_overall_statistics(frame, overall_stats):
     lines = [
         "Overall averages across athletes",
         #f"Athlete Count: {overall_stats['athlete_count']}",
-        f"Average Speed: {overall_stats['average_speed']:.6f}",
-        f"Average Standup Time (s): {overall_stats['average_standup_time_seconds']:.2f}",
-        f"Average Parter Time (s): {overall_stats['average_parter_time_seconds']:.2f}",
-        f"Average Unknown Posture Time (s): {overall_stats['average_unknown_posture_time_seconds']:.2f}",
-        f"Average Explosive Moments: {overall_stats['average_explosive_moment_count']:.2f}",
+        f"  Speed: {overall_stats['speed']:.6f}",
+        f"  Standup Time (s): {overall_stats['standup_time_seconds']:.2f}",
+        f"  Parter Time (s): {overall_stats['parter_time_seconds']:.2f}",
+        f"  Unknown Posture Time (s): {overall_stats['unknown_posture_time_seconds']:.2f}",
+        f"  Explosive Moments: {overall_stats['explosive_moment_count']:.2f}",
     ]
     height, width = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -521,11 +522,11 @@ def write_overall_stats_to_file(filepath, overall_stats):
     with open(filepath, "a", encoding="utf-8") as file:
         file.write("Overall averages across athletes\n")
         file.write(f"Athlete Count: {overall_stats['athlete_count']}\n")
-        file.write(f"Average Speed: {overall_stats['average_speed']:.6f}\n")
-        file.write(f"Average Standup Time (s): {overall_stats['average_standup_time_seconds']:.2f}\n")
-        file.write(f"Average Parter Time (s): {overall_stats['average_parter_time_seconds']:.2f}\n")
-        file.write(f"Average Unknown Posture Time (s): {overall_stats['average_unknown_posture_time_seconds']:.2f}\n")
-        file.write(f"Average Explosive Moments: {overall_stats['average_explosive_moment_count']:.2f}\n")
+        file.write(f" Speed: {overall_stats['speed']:.6f}\n")
+        file.write(f" Standup Time (s): {overall_stats['standup_time_seconds']:.2f}\n")
+        file.write(f" Parter Time (s): {overall_stats['parter_time_seconds']:.2f}\n")
+        file.write(f" Unknown Posture Time (s): {overall_stats['unknown_posture_time_seconds']:.2f}\n")
+        file.write(f" Explosive Moments: {overall_stats['_explosive_moment_count']:.2f}\n")
 
 def process_video(
     video_path: str,
@@ -698,6 +699,440 @@ def process_video(
                         (20, 140 + i * 35 + 20),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.1,
+                        color,
+                        2,
+                    )
+
+                writer.write(frame)
+                frame_index += 1
+                progress.update(1)
+
+    finally:
+        cap.release()
+        writer.release()
+        if detector is not None:
+            detector.close()
+        cv2.destroyAllWindows()
+
+    output_data = {
+        "video": {
+            "filename": Path(video_path).name,
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "total_frames": total_frames,
+            "analysis_sample_rate": sample_rate,
+            "max_poses": max_poses,
+            "identity_tracking": {
+                "method": "torso HSV histogram + position",
+                "max_lost_seconds": MAX_TRACK_LOST_SECONDS,
+                "max_match_cost": MAX_MATCH_COST,
+            },
+            "color_format": "BGR",
+            "movement_statistics": {
+                "minimum_tracked_movement": MIN_TRACKED_MOVEMENT,
+                "activity_window_seconds": ACTIVITY_WINDOW_SECONDS,
+            },
+        },
+        "athletes": [stats.to_dict() for _, stats in sorted(athlete_stats_by_id.items())],
+        "activity_timeline": [
+            {"person_id": athlete_id, **moment}
+            for athlete_id, stats in sorted(athlete_stats_by_id.items())
+            for moment in stats.explosive_moments
+        ],
+        "overall_statistics": build_overall_statistics(athlete_stats_by_id),
+        "frames": frames_data,
+    }
+
+    with open(json_path, "w", encoding="utf-8") as file:
+        json.dump(output_data, file, indent=2, ensure_ascii=False)
+
+    print("\nAnalysis complete!")
+    print(f"Output video: {output_path}")
+    print(f"Output JSON: {json_path}")
+    print(f"Analyzed frames: {len(frames_data)}")
+
+    # Save result to result.txt
+    save_result_to_txt([person for frame_data in frames_data for person in frame_data['persons']])
+
+    # Write separate statistics for each athlete.
+    for index, stats in enumerate(athlete_stats_by_id.values()):
+        write_athlete_stats_to_file(
+            "athlete_stats.txt", stats, mode="w" if index == 0 else "a"
+        )
+    write_overall_stats_to_file(
+        "athlete_stats.txt", build_overall_statistics(athlete_stats_by_id)
+    )
+
+# ... (previous code)
+
+def detect_poses(result, frame, tracker, timestamp):
+    detections = []
+
+    for detection_index, landmarks in enumerate(result.pose_landmarks):
+        feature, center = get_torso_feature(frame, landmarks)
+
+        detection = {
+            "detection_index": detection_index,
+            "landmarks_raw": landmarks,
+            "world_landmarks_raw": (
+                result.pose_world_landmarks[detection_index]
+                if detection_index < len(result.pose_world_landmarks)
+                else None
+            ),
+            "feature": feature,
+            "center": center,
+        }
+        detections.append(detection)
+
+    detections = tracker.update(detections, timestamp)
+
+    for detection in detections:
+        frame_height, frame_width = frame.shape[:2]
+        posture, angle = classify_posture(
+            detection["landmarks_raw"], frame_width, frame_height
+        )
+        detection["posture"] = posture
+        detection["torso_angle_degrees"] = angle
+
+    persons = []
+    for detection in detections:
+        person_id = detection["person_id"]
+        landmarks = detection["landmarks_raw"]
+
+        person_data = {
+            "person_id": int(person_id),
+            "detection_index": int(detection["detection_index"]),
+            "identity_match_cost": detection.get("match_cost"),
+            "speed": float(detection["speed"]),
+            "posture": detection["posture"],
+            "torso_angle_degrees": detection["torso_angle_degrees"],
+            "landmarks": [
+                landmark_to_dict(lm, i)
+                for i, lm in enumerate(landmarks)
+            ],
+        }
+
+        world_landmarks = detection["world_landmarks_raw"]
+        if world_landmarks is not None:
+            person_data["world_landmarks"] = [
+                world_landmark_to_dict(lm, i)
+                for i, lm in enumerate(world_landmarks)
+            ]
+
+        persons.append(person_data)
+
+    return persons, detections
+
+def draw_skeleton(frame, detections):
+    height, width = frame.shape[:2]
+
+    for detection in detections:
+        person_id = detection["person_id"]
+        landmarks = detection["landmarks_raw"]
+
+        color = get_person_color(person_id)
+
+        points = []
+        for landmark in landmarks:
+            x = int(landmark.x * width)
+            y = int(landmark.y * height)
+            points.append((x, y))
+
+        for start_idx, end_idx in POSE_CONNECTIONS:
+            if start_idx >= len(points) or end_idx >= len(points):
+                continue
+            cv2.line(
+                frame, points[start_idx], points[end_idx],
+                color, thickness=3, lineType=cv2.LINE_AA
+            )
+
+        for point in points:
+            cv2.circle(frame, point, radius=4, color=color, thickness=-1)
+
+        if len(points) > 12:
+            shoulder_x = (points[11][0] + points[12][0]) // 2
+            shoulder_y = (points[11][1] + points[12][1]) // 2
+            cv2.putText(
+                frame,
+                f"Athlete {person_id}",
+                (shoulder_x, max(shoulder_y - 20, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+    return frame
+
+def save_result_to_txt(persons_data):
+    with open("result.txt", "w", encoding="utf-8") as file:
+        for person_data in persons_data:
+            file.write(f"Person ID: {person_data['person_id']}\n")
+            file.write(f"Detection Index: {person_data['detection_index']}\n")
+            file.write(f"Speed: {person_data['speed']:.6f}\n")
+            if 'identity_match_cost' in person_data:
+                file.write(f"Identity Match Cost: {person_data['identity_match_cost']}\n")
+            file.write("Landmarks:\n")
+            for landmark in person_data['landmarks']:
+                file.write(f"  {landmark['name']}: ({landmark['x']}, {landmark['y']}, {landmark['z']})\n")
+            if 'world_landmarks' in person_data:
+                file.write("World Landmarks:\n")
+                for landmark in person_data['world_landmarks']:
+                    file.write(f"  {landmark['name']}: ({landmark['x']}, {landmark['y']}, {landmark['z']})\n")
+            file.write("\n")
+
+def build_overall_statistics(athlete_stats_by_id):
+    """Return arithmetic means across athletes for the end-of-file summary."""
+    stats_list = list(athlete_stats_by_id.values())
+    if not stats_list:
+        return {
+            "athlete_count": 0,
+            "speed": 0.0,
+            "standup_time_seconds": 0.0,
+            "parter_time_seconds": 0.0,
+            "unknown_posture_time_seconds": 0.0,
+            "explosive_moment_count": 0.0,
+            "takedown_count": 0.0,
+        }
+    count = len(stats_list)
+    return {
+        "athlete_count": count,
+        "speed": sum(item.get_average_speed() for item in stats_list)  ,
+        "standup_time_seconds": sum(item.standuptime for item in stats_list) ,
+        "parter_time_seconds": sum(item.partertime for item in stats_list) ,
+        "unknown_posture_time_seconds": (
+            sum(item.unknown_posture_time for item in stats_list) 
+        ),
+        "explosive_moment_count": (
+            sum(len(item.explosive_moments) for item in stats_list) 
+        ),
+        "takedown_count": (
+            sum(item.takedown_count for item in stats_list)
+        ),
+    }
+
+def draw_overall_statistics(frame, overall_stats):
+    """Draw the live all-athlete summary in a readable panel on the right."""
+    lines = [
+        "Overall averages across athletes",
+        f"Athlete Count: {overall_stats['athlete_count']}",
+        f"Speed: {overall_stats['speed']:.6f}",
+        f"Standup Time (s): {overall_stats['standup_time_seconds']:.2f}",
+        f"Parter Time (s): {overall_stats['parter_time_seconds']:.2f}",
+        f"Unknown Posture Time (s): {overall_stats['unknown_posture_time_seconds']:.2f}",
+        f"Explosive Moments: {overall_stats['explosive_moment_count']:.2f}",
+        f"Takedown Count: {overall_stats['takedown_count']:.2f}",
+    ]
+    height, width = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.4 if width >= 960 else 0.4
+    thickness = 1
+    padding = 3
+    line_height = int(26 * (font_scale / 0.5))
+    text_width = max(cv2.getTextSize(line, font, font_scale, thickness)[0][0] for line in lines)
+    panel_width = min(text_width + 2 * padding, width - 10)
+    panel_height = line_height * len(lines) + 2 * padding
+    x1 = max(5, width - panel_width - 15)
+    y1 = max(5, height - panel_height - 15)
+    x2 = min(width - 5, x1 + panel_width)
+    y2 = min(height - 5, y1 + panel_height)
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (20, 20, 20), thickness=-1)
+    cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)
+    for index, line in enumerate(lines):
+        y = y1 + padding + (index + 1) * line_height - 2
+        cv2.putText(
+            frame, line, (x1 + padding, y), font, font_scale,
+            (255, 255, 255), thickness, cv2.LINE_AA,
+        )
+
+def write_overall_stats_to_file(filepath, overall_stats):
+    with open(filepath, "a", encoding="utf-8") as file:
+        file.write("Overall averages across athletes\n")
+        file.write(f"Athlete Count: {overall_stats['athlete_count']}\n")
+        file.write(f" Speed: {overall_stats['speed']:.6f}\n")
+        file.write(f" Standup Time (s): {overall_stats['standup_time_seconds']:.2f}\n")
+        file.write(f" Parter Time (s): {overall_stats['parter_time_seconds']:.2f}\n")
+        file.write(f" Unknown Posture Time (s): {overall_stats['unknown_posture_time_seconds']:.2f}\n")
+        file.write(f" Explosive Moments: {overall_stats['explosive_moment_count']:.2f}\n")
+        file.write(f" Takedown Count: {overall_stats['takedown_count']:.2f}\n")
+
+def process_video(
+    video_path: str,
+    output_path: str,
+    json_path: str,
+    model_path: str,
+    sample_rate: float,
+    max_poses: int,
+):
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Input video not found: {video_path}")
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be greater than 0")
+    if max_poses < 1:
+        raise ValueError("max_poses must be at least 1")
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30.0
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps if fps > 0 else 0
+
+    print(f"Video: {video_path}")
+    print(f"Resolution: {width}x{height}")
+    print(f"FPS: {fps:.2f}")
+    print(f"Duration: {duration:.2f} seconds")
+    print(f"Total frames: {total_frames}")
+    print(f"Pose analysis rate: {sample_rate} FPS")
+    print("Athlete identity: torso HSV color + position tracking")
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(json_path).parent.mkdir(parents=True, exist_ok=True)
+
+    writer = cv2.VideoWriter(
+        output_path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not writer.isOpened():
+        cap.release()
+        raise RuntimeError(f"Could not create output video: {output_path}")
+
+    detector = None
+    frames_data = []
+    frame_index = 0
+    last_analysis_time = -1.0
+    last_detections = []
+    tracker = AthleteTracker()
+    athlete_stats_by_id = {}
+    overall_stats = build_overall_statistics(athlete_stats_by_id)
+
+    try:
+        detector = load_model(model_path, max_poses)
+
+        with tqdm(total=total_frames, desc="Analyzing BJJ video") as progress:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                timestamp_seconds = frame_index / fps
+                timestamp_ms = int(timestamp_seconds * 1000)
+
+                should_analyze = (
+                    last_analysis_time < 0
+                    or timestamp_seconds - last_analysis_time >= 1.0 / sample_rate
+                )
+
+                if should_analyze:
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(
+                        image_format=mp.ImageFormat.SRGB,
+                        data=rgb_frame,
+                    )
+
+                    try:
+                        result = detector.detect_for_video(mp_image, timestamp_ms)
+                        persons_data, last_detections = detect_poses(
+                            result, frame, tracker, timestamp_seconds
+                        )
+
+                        # Keep separate speed histories for every persistent ID.
+                        for detection in last_detections:
+                            athlete_id = detection["person_id"]
+                            stats = athlete_stats_by_id.setdefault(
+                                athlete_id, AthleteStats(athlete_id=athlete_id)
+                            )
+                            activity_average, is_explosive, is_takedown = stats.add_observation(
+                                timestamp_seconds,
+                                detection["speed"],
+                                detection["posture"],
+                            )
+                            detection["activity_average_3s"] = activity_average
+                            detection["is_explosive_moment"] = is_explosive
+                            detection["is_takedown"] = is_takedown
+
+                        activity_by_id = {
+                            detection["person_id"]: detection
+                            for detection in last_detections
+                        }
+                        for person_data in persons_data:
+                            activity = activity_by_id[person_data["person_id"]]
+                            person_data["activity_average_3s"] = activity[
+                                "activity_average_3s"
+                            ]
+                            person_data["is_explosive_moment"] = activity[
+                                "is_explosive_moment"
+                            ]
+                            person_data["is_takedown"] = activity[
+                                "is_takedown"
+                            ]
+
+                        frames_data.append({
+                            "frame_index": frame_index,
+                            "timestamp": timestamp_seconds,
+                            "persons": persons_data,
+                        })
+                        overall_stats = build_overall_statistics(athlete_stats_by_id)
+
+                    except Exception as error:
+                        print(
+                            f"\nPose detection error at frame {frame_index}: {error}",
+                            file=sys.stderr,
+                        )
+                        last_detections = []
+
+                    last_analysis_time = timestamp_seconds
+
+                if last_detections:
+                    frame = draw_skeleton(frame, last_detections)
+
+                draw_overall_statistics(frame, overall_stats)
+
+                # cv2.putText(
+                #     frame, f"Video FPS: {fps:.1f}", (20, 35),
+                #     cv2.FONT_HERSHEY_SIMPLEX, 0.1, (255, 255, 255), 2
+                # )
+                # cv2.putText(
+                #     frame, f"Time: {timestamp_seconds:.2f}s", (20, 70),
+                #     cv2.FONT_HERSHEY_SIMPLEX, 0.1, (255, 255, 255), 2
+                # )
+                # cv2.putText(
+                #     frame, f"Detected: {len(last_detections)}", (20, 105),
+                #     cv2.FONT_HERSHEY_SIMPLEX, 0.1, (255, 255, 255), 2
+                # )
+
+                for i in range(min(len(last_detections), len(PERSON_COLORS_BGR))):
+                    person_id = last_detections[i]["person_id"]
+                    color = get_person_color(person_id)
+                    posture = last_detections[i]["posture"]  # Get current posture from last_detections
+                    cv2.putText(
+                        frame,
+                        f"Athlete {person_id} {posture}",  # Use the current posture
+                        (20, 140 + i * 135),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0,
+                        (255, 255, 255),
+                        2,
+                    )
+                    cv2.putText(
+                        frame,
+                        f"color: {color}",
+                        (20, 140 + i * 135 + 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0,
                         color,
                         2,
                     )
